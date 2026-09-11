@@ -14,7 +14,7 @@ if (!ANTHROPIC_API_KEY) { console.error('Falta ANTHROPIC_API_KEY'); process.exit
 const REST = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1`;
 const SB = { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, 'Content-Type': 'application/json' };
 const UA = 'rodape-observatorio/1.0 (TCC; contato: mofo.ws)';
-const MAX_NEW = parseInt(process.env.MAX_NEW || '5', 10);  // padrão 5/dia; no recomeço passe MAX_NEW=30
+const MAX_NEW = parseInt(process.env.MAX_NEW || '30', 10);  // padrão 5/dia; no recomeço passe MAX_NEW=30
 const MODEL = 'claude-haiku-4-5-20251001';
 
 const slug = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
