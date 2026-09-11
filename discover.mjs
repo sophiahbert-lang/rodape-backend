@@ -14,7 +14,7 @@ if (!ANTHROPIC_API_KEY) { console.error('Falta ANTHROPIC_API_KEY'); process.exit
 const REST = `${SUPABASE_URL.replace(/\/$/, '')}/rest/v1`;
 const SB = { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, 'Content-Type': 'application/json' };
 const UA = 'rodape-observatorio/1.0 (TCC; contato: mofo.ws)';
-const MAX_NEW = 5;           // no máximo 5 assuntos novos por dia
+const MAX_NEW = parseInt(process.env.MAX_NEW || '5', 10);  // padrão 5/dia; no recomeço passe MAX_NEW=30
 const MODEL = 'claude-haiku-4-5-20251001';
 
 const slug = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -34,7 +34,7 @@ async function candidates() {
   const d = new Date(Date.now() - 2 * 864e5); // 2 dias atrás (o ranking tem atraso)
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
   const out = [];
-  for (const lang of ['en', 'pt']) {
+  for (const lang of ['pt', 'en']) {
     try {
       const url = `https://wikimedia.org/api/rest_v1/metrics/pageviews/top/${lang}.wikipedia.org/all-access/${y}/${m}/${day}`;
       const r = await fetch(url, { headers: { 'User-Agent': UA } });
@@ -50,26 +50,29 @@ async function candidates() {
       }
     } catch (_) {}
   }
-  // dedup por título, ordena por views, corta em 120 (economiza tokens)
+  // prioriza PT (o que o público lusófono/Brasil buscou); en só reforça
   const seen = new Set(), uniq = [];
-  out.sort((a, b) => b.views - a.views);
   for (const c of out) { const k = c.title.toLowerCase(); if (seen.has(k)) continue; seen.add(k); uniq.push(c); }
-  return uniq.slice(0, 120);
+  uniq.sort((a, b) => (a.lang === b.lang ? b.views - a.views : (a.lang === 'pt' ? -1 : 1)));
+  return uniq.slice(0, 140);
 }
 
 // ---- 3) curadoria pela IA (Claude Haiku) -------------------------
 async function curate(cands) {
   const list = cands.map(c => `- ${c.title} (${c.views} views)`).join('\n');
-  const system = `Você seleciona assuntos para um observatório de conversação cultural (uso de Relações Públicas, foco em cultura pop global e brasileira).
-Dada a lista dos artigos mais vistos da Wikipédia ontem, escolha ATÉ ${MAX_NEW} que sejam assuntos CULTURAIS relevantes e em ascensão: cinema, séries, música/artistas, games, livros, celebridades, moda, fenômenos de internet/memes/estéticas.
-EXCLUA: política, eleições, esportes e atletas, notícia dura, guerra, obituários (a menos que figura cultural relevante), lugares/geografia, empresas/tecnologia genérica, conteúdo adulto, temas puramente técnicos ou enciclopédicos sem circulação cultural atual.
-Prefira o que gera conversa cultural. Se quase nada se qualificar, devolva menos itens (ou lista vazia). Nunca invente itens fora da lista.
+  const system = `Você seleciona assuntos para um observatório de conversação cultural voltado a Relações Públicas no BRASIL.
+A lista abaixo são os artigos que o público lusófono (majoritariamente Brasil) MAIS BUSCOU na Wikipédia ontem. Seu objetivo é capturar O QUE O BRASILEIRO ESTÁ CONSUMINDO — a ORIGEM não importa (pode ser série gringa, game internacional, artista de fora), desde que o público brasileiro esteja buscando.
+Escolha ATÉ ${MAX_NEW} que sejam assuntos CULTURAIS relevantes e em ascensão: cinema, séries, música/artistas, games, livros, celebridades, moda, fenômenos de internet/memes/estéticas.
+EXCLUA: política, eleições, esportes e atletas, notícia dura, guerra, obituários (a menos que figura cultural), lugares/cidades/geografia pura, empresas/tecnologia genérica, conteúdo adulto, temas enciclopédicos sem circulação cultural atual.
+IMPORTANTE: um item pode parecer um lugar mas ser uma OBRA (ex.: uma série com nome de cidade). Julgue pelo que o público está buscando; na dúvida sobre lugar-vs-obra, descarte.
+Se quase nada se qualificar, devolva menos itens (ou lista vazia). Nunca invente itens fora da lista.
+No campo wiki_title, copie o TÍTULO EXATO do artigo como aparece na lista (não traduza nem invente).
 Responda SOMENTE com um array JSON, sem texto ao redor, cada item no formato:
-{"subject_id":"slug-curto","nome":"Nome","tipo":"obra|pessoa|tema","kind":"rótulo curto em PT (ex: 'Filme · 2026', 'Cantora', 'Série', 'Fenômeno de internet')","wiki_title":"Título exato do artigo em inglês"}`;
+{"subject_id":"slug-curto","nome":"Nome","tipo":"obra|pessoa|tema","kind":"rótulo curto em PT (ex: 'Filme · 2026', 'Cantora', 'Série', 'Fenômeno de internet')","wiki_title":"Título EXATO do artigo, copiado da lista"}`;
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: MODEL, max_tokens: 900, system, messages: [{ role: 'user', content: `Artigos mais vistos ontem:\n${list}` }] }),
+    body: JSON.stringify({ model: MODEL, max_tokens: Math.min(4000, 300 + MAX_NEW*120), system, messages: [{ role: 'user', content: `Artigos que o público lusófono (Brasil) mais buscou ontem:\n${list}` }] }),
   });
   if (!r.ok) { console.error('anthropic', r.status, (await r.text()).slice(0, 300)); return []; }
   const j = await r.json();
@@ -100,15 +103,22 @@ if (!cands.length) { console.log('nada novo pra avaliar'); process.exit(0); }
 const picks = await curate(cands);
 console.log(`IA escolheu: ${picks.length}`);
 
+// lookup para recuperar o idioma e o título exato do artigo escolhido
+const byTitle = {};
+cands.forEach(c => { byTitle[c.wiki_title.toLowerCase()] = c; byTitle[c.title.toLowerCase()] = c; });
+
 const clean = [];
 for (const p of picks.slice(0, MAX_NEW)) {
   if (!p || !p.nome) continue;
   const id = slug(p.subject_id || p.nome);
   if (!id || ids.has(id)) continue;
   ids.add(id);
+  const cand = byTitle[(p.wiki_title || '').toLowerCase()] || byTitle[(p.nome || '').toLowerCase()];
+  const wtitle = cand ? cand.wiki_title : (p.wiki_title || p.nome);
+  const wlang = cand ? cand.lang : 'pt';
   clean.push({
     subject_id: id, nome: p.nome, tipo: (p.tipo || 'tema'),
-    kind: p.kind || '', wiki_title: p.wiki_title || p.nome, wiki_lang: 'en',
+    kind: p.kind || '', wiki_title: wtitle, wiki_lang: wlang,
     youtube_query: p.nome, reddit_query: p.nome, news_query: p.nome, active: true,
   });
 }
