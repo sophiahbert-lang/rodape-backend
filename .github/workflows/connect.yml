@@ -1,0 +1,17 @@
+name: Conexões RODAPÉ
+on:
+  schedule:
+    - cron: '45 9 * * *'   # 09:45 UTC — depois do explain (09:30)
+  workflow_dispatch: {}
+jobs:
+  connect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: node connect.mjs
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
